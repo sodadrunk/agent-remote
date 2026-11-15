@@ -56,13 +56,18 @@ object Notifier {
         title: String,
         what: String,
         vibrate: Boolean,
+        permission: PermissionAsk? = null,
     ) {
         if (!canPost(context)) return
-        val notification = NotificationCompat.Builder(context, RemoteApp.CHANNEL_ALERTS)
+        // A permission names its tool and command: that is what is being
+        // decided, so it leads; the prompt that started the turn follows.
+        val body = permission?.summary?.takeIf { it.isNotBlank() }
+            ?.let { "$it\n\n$title" } ?: title
+        val builder = NotificationCompat.Builder(context, RemoteApp.CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_stat_agent)
             .setContentTitle(what)
-            .setContentText(title)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(title))
+            .setContentText(permission?.summary?.takeIf { it.isNotBlank() } ?: title)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -70,12 +75,64 @@ object Notifier {
             // only silences what the app itself asks for.
             .setSilent(!vibrate)
             .setContentIntent(openApp(context, ref))
+        if (permission != null && permission.requestId.isNotBlank()) {
+            // Answer without opening the app. Deny first: the button nearest
+            // the edge should not be the one that lets a command run.
+            builder.addAction(0, "Deny", answerIntent(context, ref, permission, allow = false))
+            builder.addAction(0, "Allow", answerIntent(context, ref, permission, allow = true))
+        }
+        manager(context)?.notify(blockedId(ref), builder.build())
+    }
+
+    /** What a permission notification is asking, and how to answer it. */
+    data class PermissionAsk(
+        val jobId: String,
+        val requestId: String,
+        val summary: String,
+    )
+
+    /** The answer could not be delivered: say so, and offer the app. */
+    fun answerFailed(context: Context, ref: SessionRef, reason: String) {
+        if (!canPost(context)) return
+        val notification = NotificationCompat.Builder(context, RemoteApp.CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_stat_agent)
+            .setContentTitle("Answer not sent")
+            .setContentText(reason.ifBlank { "Open the session to answer." })
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openApp(context, ref))
             .build()
-        manager(context)?.notify(ID_BLOCKED_BASE + ref.key.hashCode().and(0xFF), notification)
+        manager(context)?.notify(blockedId(ref), notification)
+    }
+
+    private fun blockedId(ref: SessionRef) = ID_BLOCKED_BASE + ref.key.hashCode().and(0xFF)
+
+    private fun answerIntent(
+        context: Context,
+        ref: SessionRef,
+        ask: PermissionAsk,
+        allow: Boolean,
+    ): PendingIntent {
+        val intent = Intent(context, PermissionActionReceiver::class.java).apply {
+            action = PermissionActionReceiver.ACTION
+            putExtra(PermissionActionReceiver.EXTRA_REF, ref.key)
+            putExtra(PermissionActionReceiver.EXTRA_JOB, ask.jobId)
+            putExtra(PermissionActionReceiver.EXTRA_REQUEST, ask.requestId)
+            putExtra(PermissionActionReceiver.EXTRA_ALLOW, allow)
+        }
+        // One PendingIntent per (session, answer): the request code separates
+        // Allow from Deny, UPDATE_CURRENT refreshes the extras for a new ask.
+        val code = ref.key.hashCode() * 2 + (if (allow) 1 else 0)
+        return PendingIntent.getBroadcast(
+            context,
+            code,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     fun clearBlocked(context: Context, ref: SessionRef) {
-        manager(context)?.cancel(ID_BLOCKED_BASE + ref.key.hashCode().and(0xFF))
+        manager(context)?.cancel(blockedId(ref))
     }
 
     fun finished(

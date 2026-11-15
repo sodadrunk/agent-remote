@@ -2405,8 +2405,11 @@ void tick() {
       lv_label_set_text(bleState, bleStateText().c_str());
   }
 
-  // Standing reminder while a question/permission waits (daemon or BLE).
-  if ((anyPending || blePending) && millis() >= remindNextAt) {
+  // Standing reminder only for what this device can answer: a BLE buddy
+  // approval. A daemon question or permission chimes once when it arrives
+  // (and stays amber on its card); re-chiming every 30 s about something the
+  // pager has no way to answer was just noise.
+  if (blePending && millis() >= remindNextAt) {
     remindNextAt = millis() + kRemindMs;
     cue(chime::Cue::Attention);
   }
