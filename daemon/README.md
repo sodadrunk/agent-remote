@@ -19,17 +19,6 @@ Bump `agentremoted/__init__.py` → `__version__` **once per shippable change**
 intermediate edit in a single feature. `/api/ping` reports the version so you
 can see whether a host picked up a deploy.
 
-**2.22.0** The daemon can tell a phone that is not looking. When a turn
-needs an answer, fails or finishes it posts one message to an ntfy topic
-and/or a webhook (`notify_ntfy_url`, `notify_webhook_url`; off until one is
-set). One message per change: a daemon restart re-announces nothing, a turn
-with a queued follow-up is not "finished", turns shorter than
-`notify_finished_min_s` (30) finish silently, and a guest's sessions never
-reach the host's alerts. By default a push names only the harness, the
-project folder and the host; `notify_detail` adds the session title and what
-is asked. `POST /api/notify/test` sends a sample; `/api/ping` reports
-`notify`. See "Notifications" below.
-
 **2.21.0** New sessions show up on every client without a refresh. The
 status stream (`/sse/status`, `/ws/status`) carries `sessions_rev`, which
 goes up when a session is created or removed anywhere on the host - its own
@@ -768,7 +757,6 @@ POST /api/attachments
 GET  /api/focus                                 focus rows only, urgency-sorted
 POST /api/focus/<key>/done                      take a row out of Focus
 POST /api/focus/<key>/restore                   undo done (7-day window)
-POST /api/notify/test                           send a sample alert now
 POST /api/sessions/<id>/title {title}           rename ("" restores derived name)
 POST /api/sessions/<id>/title/regenerate        re-derive the title (Haiku)
 GET  /api/drop                                  files and folders (type=file|dir;
@@ -785,41 +773,6 @@ a headless turn, or one removed - but not on activity inside a session. A
 client keeps the last value per daemon, ignores the first frame after it
 connects, and re-lists when the value changes. It restarts at 0 with the
 daemon. A guest's stream counts only the guest's own sessions.
-
-### Notifications
-
-The status stream only reaches a client that is open. For a phone in a
-pocket the daemon can post an alert itself, to [ntfy](https://ntfy.sh) (the
-public server or your own) and/or a webhook:
-
-```json
-{
-  "notify_ntfy_url": "https://ntfy.sh/agent-remote-3f9c1e7a52",
-  "notify_on": ["needs_answer", "failed", "turn_finished"]
-}
-```
-
-Subscribe to the same topic in the ntfy app. On the public server a topic
-name is the only secret, so make it long and random, or use a protected
-topic with `notify_ntfy_token`.
-
-| key | default | meaning |
-| --- | --- | --- |
-| `notify_ntfy_url` | `""` | topic URL; empty = off |
-| `notify_ntfy_token` | `""` | access token for a protected topic |
-| `notify_webhook_url` | `""` | POSTs the event as JSON (`state`, `title`, `message`, `provider`, `session_id`, `job_id`, `host`, `cwd_name`, `kind`) |
-| `notify_on` | all three | which of `needs_answer`, `failed`, `turn_finished` to send |
-| `notify_finished_min_s` | `30` | no "finished" alert for turns shorter than this |
-| `notify_detail` | `false` | add the session title and the question / command being asked |
-| `notify_click_url` | `""` | opened when the notification is tapped (e.g. your web client URL) |
-
-A push leaves this machine and may be stored by the push server, which is
-why the default message says only "Claude has a question" and
-"<folder> on <host>". Check a setup with:
-
-```
-curl -X POST -H "X-Auth-Token: $TOKEN" http://127.0.0.1:8473/api/notify/test
-```
 
 ### Focus
 
