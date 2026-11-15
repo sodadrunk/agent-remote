@@ -99,6 +99,7 @@ from . import palette
 from . import accounts
 from . import focus as focus_store
 from . import linked_files
+from . import notify
 from . import shares as share_store
 from . import session_watch
 from . import ssestream
@@ -1416,6 +1417,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def _handle_notify_test(self):
+        """Send a sample alert now, so a setup can be checked without waiting
+        for a turn to block. Host account only: the targets are the host's."""
+        p = self.principal
+        if p is not None and p.is_guest:
+            self._error(403, "not available to guest accounts")
+            return
+        notifier = getattr(self, "notifier", None)
+        if notifier is None or not notifier.enabled:
+            self._error(409, "notifications are not configured: set "
+                             "notify_ntfy_url or notify_webhook_url in "
+                             "config.json and restart the daemon")
+            return
+        errors = notifier.send_test()
+        if errors:
+            self._error(502, "; ".join(errors))
+            return
+        self._send_json({"ok": True})
+
     def _handle_focus_action(self, raw_key: str, action: str):
         b = self.focus
         if b is None:
@@ -1778,6 +1798,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         payload["drop_range"] = True
         drop_cap = self._drop_cap_bytes()
         payload["max_drop_mb"] = drop_cap // (1024 * 1024) if drop_cap else 0
+        # Outbound alerts (ntfy / webhook) configured on this host: a client
+        # can say "you will be told" instead of guessing.
+        notifier = getattr(self, "notifier", None)
+        payload["notify"] = bool(notifier is not None and notifier.enabled)
         caps = payload.get("caps")
         if isinstance(caps, dict):
             caps = dict(caps)
@@ -2693,6 +2717,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         # Focus + title writes span providers, so they are answered before the
         # harness split — one implementation for multi root and prefixed paths.
         if self._route_focus_post(path, body):
+            return
+
+        if path == "/api/notify/test":
+            self._handle_notify_test()
             return
 
         # Multi root: resolve harness from body.provider or session/job id.
@@ -4089,8 +4117,13 @@ def make_server(config, token, bundles) -> ThreadingHTTPServer:
         "session_watcher": session_watch.SessionWatcher(
             {n: b.store for n, b in (bundles or {}).items()}),
         "guest_session_watchers": {},
+        # Outbound "a session wants you" alerts (ntfy / webhook); a no-op
+        # until a target is configured.
+        "notifier": None,
         "guest_session_watchers_lock": threading.Lock(),
     })
+    handler.notifier = notify.Notifier(config, bundles, focus=handler.focus)
+    handler.notifier.start()
     server = _HttpServer((config.bind, int(config.port)), handler)
     cert = str(getattr(config, "tls_cert", "") or "")
     key = str(getattr(config, "tls_key", "") or "")

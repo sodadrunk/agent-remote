@@ -184,6 +184,23 @@ DEFAULTS = {
     # costs neither daemon nor phone RAM (the old 64 MB cap was a whole-file
     # read on both ends).
     "max_drop_mb": 0,
+    # Outbound alerts when a turn needs an answer, fails or finishes, for a
+    # phone whose app is not open. Off until a target is set.
+    #   notify_ntfy_url     topic URL, e.g. https://ntfy.sh/<hard-to-guess>
+    #   notify_ntfy_token   access token for a protected ntfy topic
+    #   notify_webhook_url  POSTs the same event as JSON
+    #   notify_on           subset of needs_answer / failed / turn_finished
+    #   notify_finished_min_s  skip "finished" for turns shorter than this
+    #   notify_detail       include the session title and what is asked
+    #                       (a push leaves this machine; off by default)
+    #   notify_click_url    opened when the notification is tapped
+    "notify_ntfy_url": "",
+    "notify_ntfy_token": "",
+    "notify_webhook_url": "",
+    "notify_on": ["needs_answer", "failed", "turn_finished"],
+    "notify_finished_min_s": 30,
+    "notify_detail": False,
+    "notify_click_url": "",
     # Extra slash commands offered to the app (merged with what the provider
     # discovers itself — claude also scans ~/.claude/commands/*.md).
     "slash_commands": [],
