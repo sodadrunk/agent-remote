@@ -548,7 +548,7 @@ async function paintOpenAfterJob(profileId, jobId, snap, meta = {}) {
     try { await paintAfterJobInFlight; } catch { /* ignore */ }
     return;
   }
-  paintAfterJobInFlight = loadTail(gen, { keepLive: false })
+  paintAfterJobInFlight = loadTail(gen, { keepLive: false, follow: true })
     .catch(() => {})
     .finally(() => { paintAfterJobInFlight = null; });
   await paintAfterJobInFlight;
@@ -598,7 +598,7 @@ function runProcessRefresh() {
   const gen = state.openGen;
   const sid = state.open.sessionId;
   const pid = state.open.profileId;
-  processRefreshInFlight = loadTail(gen, { keepLive: true })
+  processRefreshInFlight = loadTail(gen, { keepLive: true, follow: true })
     .catch(() => {})
     .finally(() => { processRefreshInFlight = null; });
   // Fire-and-forget; openGen guard inside loadTail drops stale paints.
@@ -2101,6 +2101,81 @@ function highlightInto(host, text, query) {
   if (at < text.length) host.appendChild(document.createTextNode(text.slice(at)));
 }
 
+// ------------------------------------------------- panes (compact width)
+//
+// At phone width the list and the chat take turns. Opening a session shows
+// the chat and adds a history entry, so the browser's Back (and the Android
+// back gesture) returns to the list instead of leaving the page.
+
+const compactQuery = window.matchMedia("(max-width: 720px)");
+const isCompact = () => compactQuery.matches;
+let chatHistoryPushed = false;
+
+function showChatPane(on) {
+  const app = $("app");
+  const was = app.classList.contains("show-chat");
+  app.classList.toggle("show-chat", !!on);
+  if (on && !was && isCompact() && !chatHistoryPushed) {
+    try {
+      history.pushState({ pane: "chat" }, "");
+      chatHistoryPushed = true;
+    } catch { /* file:// or a sandboxed frame: the Back button still works */ }
+  }
+}
+
+function backToList() {
+  if (chatHistoryPushed) history.back();   // popstate does the rest
+  else showChatPane(false);
+}
+
+window.addEventListener("popstate", () => {
+  chatHistoryPushed = false;
+  $("app").classList.remove("show-chat");
+});
+
+// ---------------------------------------------------------- follow scroll
+//
+// New output follows the bottom only while the reader is already there.
+// Someone reading earlier messages keeps their place and gets a pill that
+// counts what arrived; it takes them down when they choose.
+
+const NEAR_BOTTOM_PX = 120;
+let unseenLive = 0;
+
+function nearBottom(view) {
+  return view.scrollHeight - view.scrollTop - view.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function syncJumpPill() {
+  const pill = $("jump-latest");
+  if (!pill) return;
+  const view = $("transcript");
+  const show = !!state.open && !nearBottom(view)
+    && view.scrollHeight > view.clientHeight + NEAR_BOTTOM_PX;
+  pill.classList.toggle("hidden", !show);
+  if (!show) { unseenLive = 0; return; }
+  pill.textContent = unseenLive > 0
+    ? `↓ ${unseenLive} new`
+    : "↓ Jump to latest";
+  // Keep it just above the composer, whatever height that currently is.
+  const comp = $("composer");
+  const h = comp && !comp.classList.contains("hidden") ? comp.offsetHeight : 0;
+  pill.style.setProperty("--jump-bottom", `${h + 14}px`);
+}
+
+function scrollToLatest(smooth) {
+  const view = $("transcript");
+  unseenLive = 0;
+  // Animate a short hop; a long transcript would take seconds to glide.
+  const far = view.scrollHeight - view.scrollTop > view.clientHeight * 3;
+  if (smooth && !far && view.scrollTo) {
+    view.scrollTo({ top: view.scrollHeight, behavior: "smooth" });
+  } else {
+    view.scrollTop = view.scrollHeight;
+  }
+  syncJumpPill();
+}
+
 // ------------------------------------------------------------ transcript
 
 function applyAccent(provider) {
@@ -2115,6 +2190,8 @@ function applyAccent(provider) {
 async function openSession(row) {
   stopJobWatch();
   closeLiveTui();
+  showChatPane(true);
+  unseenLive = 0;
   // Bump openGen BEFORE any await so an in-flight loadTail/pollJob from the
   // previous session can never paint into this transcript (two running jobs
   // used to cross-wire session A text into session B).
@@ -2845,7 +2922,7 @@ function renderChatSub() {
   }
 }
 
-async function loadTail(gen = state.openGen, { keepLive = false } = {}) {
+async function loadTail(gen = state.openGen, { keepLive = false, follow = false } = {}) {
   const open = state.open;
   if (!open) return;
   const profileId = open.profileId;
@@ -2877,7 +2954,7 @@ async function loadTail(gen = state.openGen, { keepLive = false } = {}) {
     } else {
       state.items = fetched;
     }
-    renderTranscript(true);
+    renderTranscript(follow ? "follow" : true);
   } catch (e) {
     if (!isOpenStill(gen, profileId, sessionId)) return;
     $("transcript").innerHTML = "";
@@ -2947,6 +3024,10 @@ function expandMessages(messages, offset) {
 }
 
 function renderTranscript(toBottom) {
+  const follow = (() => {
+    const v = $("transcript");
+    return { wasNear: nearBottom(v), top: v.scrollTop };
+  })();
   const view = $("transcript");
   view.textContent = "";
   const thread = el("div", "thread");
@@ -2965,7 +3046,15 @@ function renderTranscript(toBottom) {
     if (item.steps && item.steps.length) thread.appendChild(renderSteps(item));
   });
   view.appendChild(thread);
-  if (toBottom) view.scrollTop = view.scrollHeight;
+  if (toBottom === "follow") {
+    // A reload of what is already on screen (end of turn, process steps):
+    // stay at the bottom if the reader was there, otherwise keep their place.
+    if (follow.wasNear) view.scrollTop = view.scrollHeight;
+    else view.scrollTop = follow.top;
+  } else if (toBottom) {
+    view.scrollTop = view.scrollHeight;
+  }
+  syncJumpPill();
 }
 
 /**
@@ -3456,9 +3545,17 @@ function appendLive(item, { gen = state.openGen, profileId = null, sessionId = n
   state.items.push(row);
   const thread = $("transcript").querySelector(".thread");
   if (thread) {
-    thread.appendChild(renderMessage(state.items[state.items.length - 1]));
     const view = $("transcript");
-    view.scrollTop = view.scrollHeight;
+    // Your own message always comes into view; the agent's output only
+    // follows if you were already at the bottom.
+    const follow = row.role === "user" || nearBottom(view);
+    thread.appendChild(renderMessage(state.items[state.items.length - 1]));
+    if (follow) {
+      view.scrollTop = view.scrollHeight;
+    } else {
+      unseenLive += 1;
+    }
+    syncJumpPill();
   } else {
     renderTranscript(true);
   }
@@ -5635,6 +5732,10 @@ function wire() {
   document.addEventListener("pointerdown", unlock, { capture: true });
   document.addEventListener("keydown", unlock, { capture: true });
 
+  $("btn-back").addEventListener("click", backToList);
+  $("jump-latest").addEventListener("click", () => scrollToLatest(true));
+  $("transcript").addEventListener("scroll", syncJumpPill, { passive: true });
+  window.addEventListener("resize", syncJumpPill);
   $("btn-sound").addEventListener("click", () => setSoundCues(!soundCuesOn()));
   syncSoundButton();
 
