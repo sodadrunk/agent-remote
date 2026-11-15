@@ -416,10 +416,17 @@ function chimeFromActive(profileId, jobs) {
       // First sight: seed only. Blipping every job already running when the
       // page opens would be noise. Already-blocked turns still need the
       // attention cue so a question waiting on another session is heard.
-      if (sig === "permission" || sig === "question") playChime("attention");
+      if (sig === "permission" || sig === "question") {
+        playChime("attention");
+        deskAlert("attention", profileId, j.new_session_id || j.session_id,
+          sig === "permission" ? "wants permission" : "has a question");
+      }
     } else if (prev.sig !== sig) {
-      if (sig === "permission" || sig === "question") playChime("attention");
-      else {
+      if (sig === "permission" || sig === "question") {
+        playChime("attention");
+        deskAlert("attention", profileId, j.new_session_id || j.session_id,
+          sig === "permission" ? "wants permission" : "has a question");
+      } else {
         playChime("status");
         // Status blip means a new tool/phase — process view steps live on the
         // journal, not the SSE frame. Pull them in so the strip does not lag
@@ -500,6 +507,9 @@ async function chimeJobEnded(profileId, jobId, meta = {}) {
     // empty/unknown status are treated as success.
     if (st === "error") playChime("error");
     else playChime("done");
+    deskAlert(st === "error" ? "error" : "done", profileId,
+      snap.new_session_id || snap.session_id || meta.newSessionId || meta.sessionId,
+      st === "error" ? "failed" : "finished");
     // The stream cannot say failed-vs-finished, so let the daemon re-decide
     // now that the job is over. Without this the tag needed a manual refresh.
     refreshSessions();
@@ -735,6 +745,104 @@ function syncSoundButton() {
     ? "Sound cues on — click to mute"
     : "Sound cues off — click to enable";
   b.textContent = on ? "♪" : "♪̸";
+}
+
+// ------------------------------------------------------- desktop alerts
+//
+// The chimes only help when the tab can be heard. A browser notification
+// reaches a tab that is in the background, and the tab title carries a count
+// for a tab strip that is merely glanced at. Both fire from the same
+// transitions the chimes use, and only while this tab is not being looked
+// at: a notification for the session on screen would be noise.
+
+const canNotify = () => typeof Notification !== "undefined";
+const notifyOn = () => canNotify() && state.settings.desktopNotify === true
+  && Notification.permission === "granted";
+
+// Sessions that asked for attention while the tab was hidden: key -> kind.
+const pendingAlerts = new Map();
+const BASE_TITLE = document.title;
+
+function syncTabTitle() {
+  // Blocked sessions count for as long as they are blocked; finished ones
+  // until the tab is looked at again.
+  let blocked = 0;
+  Object.values(state.active || {}).forEach((jobs) => {
+    (jobs || []).forEach((j) => {
+      if (j && (j.pending_permission || j.pending_question)) blocked += 1;
+    });
+  });
+  let finished = 0;
+  pendingAlerts.forEach((kind) => { if (kind !== "attention") finished += 1; });
+  const n = blocked + finished;
+  document.title = n ? `(${n}) ${BASE_TITLE}` : BASE_TITLE;
+}
+
+function tabIsWatched() {
+  return !document.hidden && (typeof document.hasFocus !== "function"
+    || document.hasFocus());
+}
+
+/** kind: "attention" | "done" | "error". what: a short verb phrase. */
+function deskAlert(kind, profileId, sessionId, what) {
+  const key = `${profileId}/${sessionId || ""}`;
+  if (tabIsWatched()) return;
+  pendingAlerts.set(key, kind);
+  syncTabTitle();
+  if (!notifyOn()) return;
+  const profile = profileById(profileId);
+  const row = state.rows.find((r) => r.profileId === profileId
+    && r.session && r.session.id === sessionId);
+  const harness = row ? sessionProvider(row.session, profile) : (profile && profile.provider);
+  const who = providerOf(harness).label || "Agent";
+  const lines = [];
+  if (row && row.session.title) lines.push(row.session.title);
+  if (profile && profile.name) lines.push(profile.name);
+  try {
+    const n = new Notification(`${who} ${what}`, {
+      body: lines.join("\n"),
+      tag: key,               // one notification per session, replaced in place
+      renotify: kind === "attention",
+      requireInteraction: kind === "attention",
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+      if (row) openSession(row);
+    };
+  } catch { /* Notification constructor is unavailable in some contexts */ }
+}
+
+function clearDeskAlerts() {
+  pendingAlerts.clear();
+  syncTabTitle();
+}
+
+async function setDesktopNotify(on) {
+  if (on && canNotify() && Notification.permission !== "granted") {
+    let perm = Notification.permission;
+    if (perm !== "denied") {
+      try { perm = await Notification.requestPermission(); } catch { perm = "denied"; }
+    }
+    if (perm !== "granted") {
+      toast("Notifications are blocked for this page. Allow them in the browser's site settings.");
+      on = false;
+    }
+  }
+  state.settings.desktopNotify = !!on;
+  store.save();
+  syncNotifyButton();
+}
+
+function syncNotifyButton() {
+  const b = $("btn-notify");
+  if (!b) return;
+  if (!canNotify()) { b.classList.add("hidden"); return; }
+  const on = notifyOn();
+  b.setAttribute("aria-pressed", String(on));
+  b.title = on
+    ? "Desktop notifications on: you are told when a session needs an answer, fails or finishes while this tab is in the background"
+    : "Desktop notifications off — click to enable";
 }
 
 // ------------------------------------------------------------------- http
@@ -4029,6 +4137,7 @@ function syncStreams() {
       } catch { return; }
       // Chimes for every session on this daemon, open or not.
       chimeFromActive(id, jobs);
+      syncTabTitle();
       renderStatus();
       renderSessions();
       renderBanner();
@@ -5637,6 +5746,13 @@ function wire() {
 
   $("btn-sound").addEventListener("click", () => setSoundCues(!soundCuesOn()));
   syncSoundButton();
+  $("btn-notify").addEventListener("click", () => setDesktopNotify(!notifyOn()));
+  syncNotifyButton();
+  // Looking at the tab again acknowledges whatever finished meanwhile.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) clearDeskAlerts();
+  });
+  window.addEventListener("focus", clearDeskAlerts);
 
   wireHostFileLinks($("transcript"));
   $("btn-profiles").addEventListener("click", openProfiles);

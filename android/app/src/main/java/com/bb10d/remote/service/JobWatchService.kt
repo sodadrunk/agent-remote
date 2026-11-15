@@ -112,6 +112,10 @@ class JobWatchService : Service() {
 
                 val previous = seen["$profileId/${job.jobId}"]
                 if (watched.blocked && previous?.blocked != true) {
+                    // The stream only says "a permission is pending". The
+                    // snapshot has which one, so the notification can show
+                    // the command and carry Allow / Deny.
+                    val ask = if (job.pendingPermission) permissionAsk(profileId, job) else null
                     Notifier.blocked(
                         context = this,
                         ref = ref,
@@ -122,6 +126,7 @@ class JobWatchService : Service() {
                             "${profile.displayName} is asking a question"
                         },
                         vibrate = settings.hapticCues,
+                        permission = ask,
                     )
                 } else if (!watched.blocked && previous?.blocked == true) {
                     Notifier.clearBlocked(this, ref)
@@ -145,6 +150,20 @@ class JobWatchService : Service() {
         } else {
             pushOngoing()
         }
+    }
+
+    /** Null when the snapshot cannot be read: the alert then just opens the app. */
+    private suspend fun permissionAsk(profileId: String, job: ActiveJobDto): Notifier.PermissionAsk? {
+        val client = repo.client(profileId) ?: return null
+        val pending = runCatching {
+            client.job(job.jobId, job.nextSeq.coerceAtLeast(0))
+        }.getOrNull()?.pendingPermission ?: return null
+        if (pending.requestId.isBlank()) return null
+        val summary = listOf(pending.toolName, pending.detail)
+            .filter { it.isNotBlank() }
+            .joinToString(": ")
+            .take(240)
+        return Notifier.PermissionAsk(job.jobId, pending.requestId, summary)
     }
 
     /** "Claude · editing apiclient.cpp" — what the ongoing notification says. */
