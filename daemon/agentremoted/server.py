@@ -2035,6 +2035,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Focus list support: clients gate the mode toggle,
                 # rename, and regenerate on this flag.
                 payload["focus"] = self.focus is not None
+                # One vocabulary for session states (labels + colours).
+                payload["states"] = palette.states()
                 payload["focus_states"] = list(focus_store.STATES)
                 payload["share"] = self.shares is not None
                 # GET /api/sessions/<id>/file: open a host path the agent linked.
@@ -2088,6 +2090,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             # Focus list support: clients gate the mode toggle,
             # rename, and regenerate on this flag.
             payload["focus"] = self.focus is not None
+            # One vocabulary for session states (labels + colours).
+            payload["states"] = palette.states()
             payload["focus_states"] = list(focus_store.STATES)
             payload["share"] = self.shares is not None
             # GET /api/sessions/<id>/file: open a host path the agent linked.
