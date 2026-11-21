@@ -19,6 +19,23 @@ Bump `agentremoted/__init__.py` → `__version__` **once per shippable change**
 intermediate edit in a single feature. `/api/ping` reports the version so you
 can see whether a host picked up a deploy.
 
+**2.25.2** A question asked from a terminal reads properly on the phone.
+When Claude opens AskUserQuestion in a TUI the daemon is not driving, the
+pane watcher publishes it. It rebuilt the question from the screen: the last
+two lines of the question, no descriptions, and for options that carry a
+preview the box drawn beside them ended up inside the labels ("Uniform icon
+circles   ┌────"). The watcher now sends what the PreToolUse hook delivered:
+every question, whole, with descriptions. The screen is read only when there
+was no hook (CodeBuddy), and the preview box is cut off the labels there.
+Options carry the agent's `preview` text (a small mock-up drawn with
+spaces); Web and Android 1.7.17 show it in a fixed-width box under the
+option. BlackBerry, iOS and the pager ignore the field and show the label
+and description as before. Also: a question answered in the terminal is
+withdrawn from the clients about a second later, and answering or cancelling
+a card whose panel has already gone types nothing. Such a card could stay up
+for days, and its Escape or Down/Enter went into whatever the pane was doing
+by then.
+
 **2.25.1** Second review pass. The transcript scan takes its file size after
 it holds the session's lock, not before: a request that waited for another's
 scan carried a stale size, read it as "the file got shorter" and scanned the
